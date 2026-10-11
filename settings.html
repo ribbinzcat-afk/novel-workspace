@@ -51,6 +51,39 @@
                 <input id="novelws_width" type="range" min="480" max="1200" step="20" />
             </div>
 
+            <h4 class="novelws-settings-h">ผู้ช่วย AI <small class="novelws-muted">(ไม่บังคับ)</small></h4>
+            <label class="checkbox_label" for="novelws_ai_enabled">
+                <input id="novelws_ai_enabled" type="checkbox" />
+                <span>เปิดผู้ช่วย AI (แท็บ AI ในแผงขวาของหน้าเขียน)</span>
+            </label>
+            <small class="novelws-muted">AI ให้ความเห็นเท่านั้น ไม่เขียนหรือแก้ต้นฉบับแทน และจะส่งข้อมูลเมื่อคุณกด “ส่ง” เท่านั้น</small>
+            <div class="novelws-ai-settings">
+                <div class="novelws-settings-row">
+                    <label for="novelws_api_profile">Connection Profile</label>
+                    <select id="novelws_api_profile" class="text_pole"></select>
+                    <small class="novelws-muted">ไม่เลือก = ใช้ API หลักของ SillyTavern (ไม่แนบการ์ดตัวละครหรือแชท)</small>
+                </div>
+                <div class="novelws-settings-row">
+                    <label for="novelws_ai_max_tokens">ความยาวคำตอบสูงสุด (tokens)</label>
+                    <input id="novelws_ai_max_tokens" class="text_pole" type="number" min="100" max="16000" step="100" />
+                </div>
+                <div class="novelws-settings-row">
+                    <label for="novelws_ai_max_chars">ส่งต้นฉบับได้ยาวสุด (ตัวอักษร)</label>
+                    <input id="novelws_ai_max_chars" class="text_pole" type="number" min="2000" max="400000" step="1000" />
+                    <small class="novelws-muted">ถ้าตอนยาวกว่านี้ จะส่งเฉพาะช่วงท้าย</small>
+                </div>
+                <div class="inline-drawer novelws-prompt-drawer">
+                    <div class="inline-drawer-toggle inline-drawer-header">
+                        <b><i class="fa-solid fa-scroll"></i> แก้ prompt</b>
+                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    </div>
+                    <div class="inline-drawer-content">
+                        <small class="novelws-muted">ตัวแปร: {{text}} ต้นฉบับ · {{treatment}} treatment ของตอน · {{overview}} ภาพรวมเรื่อง · {{title}} ชื่อเรื่อง · {{scope}} ขอบเขตที่ส่ง · {{context}} ข้อความรอบ ๆ (หาคำ) · {{question}} คำถาม (ถามเอง)</small>
+                        <div id="novelws_prompt_list"></div>
+                    </div>
+                </div>
+            </div>
+
             <small class="novelws-muted">
                 งานเขียนเก็บเป็นไฟล์ <code>novelws-*.json</code> ในโฟลเดอร์ <code>data/&lt;ผู้ใช้&gt;/user/files/</code>
                 แยกจากแชทและ settings.json · คีย์ลัด Ctrl/Cmd + S = บันทึกทันที

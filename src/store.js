@@ -26,6 +26,22 @@ export const defaultSettings = {
     lastEpisodeId: '',
     lastTab: 'write',
     treatView: 'form',
+    // AI helper (v3) — off until the writer turns it on
+    aiEnabled: false,
+    apiProfile: '',           // '' = SillyTavern's main API
+    aiMaxTokens: 1200,
+    aiMaxChars: 30000,        // longest manuscript excerpt sent in one request
+    prompts: {},              // edited prompt templates (missing = default)
+    // export (v3)
+    exportOpts: {
+        format: 'docx',
+        heading: 'ตอนที่ {n}: {title}',
+        includeTitle: true,
+        pageBreak: true,
+        indent: true,
+        font: 'TH Sarabun New',
+        size: 16,
+    },
 };
 
 export function getSettings() {

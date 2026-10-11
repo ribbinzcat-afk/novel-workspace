@@ -31,6 +31,18 @@ function headers() {
  * @returns {Promise<any>}
  */
 export async function readJson(name, fallback) {
+    // Ask first, so a brand-new user does not get red 404 lines in the console.
+    try {
+        const v = await fetch('/api/files/verify', {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({ urls: [`user/files/${name}`] }),
+        });
+        if (v.ok) {
+            const map = await v.json();
+            if (map && map[`user/files/${name}`] === false) return fallback;
+        }
+    } catch { /* fall through to a normal read */ }
     let res;
     try {
         res = await fetch(`/user/files/${encodeURIComponent(name)}?t=${Date.now()}`, { cache: 'no-store' });

@@ -2,7 +2,9 @@
 // Bootstrap only: settings drawer, main switch, wand button. Features live in src/.
 import { getContext } from '../../../extensions.js';
 import { extensionName, extensionFolderUrl, getSettings, getSetting, setSetting, LOG } from './src/store.js';
-import { openWorkspace, closeWorkspace, teardown, applyEditorPrefs, refreshStatsViews, isWorkspaceOpen } from './src/workspace.js';
+import { openWorkspace, closeWorkspace, teardown, applyEditorPrefs, refreshStatsViews, isWorkspaceOpen, refreshAiViews } from './src/workspace.js';
+import { PROMPT_DEFS, validatePromptTemplate } from './src/prompts.js';
+import { listProfiles } from './src/api.js';
 import { flushProject } from './src/project.js';
 import { flushStats } from './src/stats.js';
 
@@ -41,7 +43,51 @@ function loadSettingsUi() {
     $('#novelws_line_height').val(s.editorLineHeight);
     $('#novelws_width').val(s.editorWidth);
     $('#novelws_open').prop('disabled', !s.enabled);
+    $('#novelws_ai_enabled').prop('checked', Boolean(s.aiEnabled));
+    $('#novelws_ai_max_tokens').val(s.aiMaxTokens);
+    $('#novelws_ai_max_chars').val(s.aiMaxChars);
+    $('.novelws-ai-settings').toggle(Boolean(s.aiEnabled));
+    populateApiProfiles();
+    renderPromptEditors();
     updateRangeLabels();
+}
+
+const escText = (v) => String(v ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const escAttr = (v) => escText(v).replace(/"/g, '&quot;');
+
+function populateApiProfiles() {
+    let html = '<option value="">ใช้ API หลักของ SillyTavern</option>';
+    for (const p of listProfiles()) {
+        if (!p?.id) continue;
+        html += `<option value="${escAttr(p.id)}">${escText(p.name || p.id)}</option>`;
+    }
+    const cur = getSetting('apiProfile') || '';
+    $('#novelws_api_profile').html(html).val(cur);
+    if ($('#novelws_api_profile').val() !== cur) $('#novelws_api_profile').val('');
+}
+
+function renderPromptEditors() {
+    const stored = getSetting('prompts') || {};
+    const html = Object.entries(PROMPT_DEFS).map(([id, def]) => {
+        const val = typeof stored[id] === 'string' && stored[id].trim() ? stored[id] : def.default;
+        const edited = typeof stored[id] === 'string' && stored[id].trim() && stored[id] !== def.default;
+        return `<div class="novelws-prompt-item" data-prompt="${id}">
+            <div class="novelws-prompt-head">
+                <b>${escText(def.label)}</b>${edited ? ' <small class="novelws-muted">(แก้แล้ว)</small>' : ''}
+                <button class="menu_button novelws-prompt-reset" data-prompt-reset="${id}" title="คืนค่าเริ่มต้น"><i class="fa-solid fa-rotate-left"></i> ค่าเริ่มต้น</button>
+            </div>
+            <textarea class="text_pole novelws-prompt-ta" data-prompt-id="${id}" rows="8">${escText(val)}</textarea>
+            <small class="novelws-prompt-warn"></small>
+        </div>`;
+    }).join('');
+    $('#novelws_prompt_list').html(html);
+    $('#novelws_prompt_list .novelws-prompt-ta').each(function () { validatePromptUi(this); });
+}
+
+function validatePromptUi(ta) {
+    const id = $(ta).attr('data-prompt-id');
+    const { ok, missing } = validatePromptTemplate(id, $(ta).val());
+    $(ta).siblings('.novelws-prompt-warn').text(ok ? '' : `⚠️ ขาดตัวแปรที่จำเป็น: ${missing.map(m => `{{${m}}}`).join(' ')}`);
 }
 
 function updateRangeLabels() {
@@ -59,6 +105,47 @@ function bindSettingsHandlers() {
         if (!on) await teardown();
     });
     $(document).on('click', '#novelws_open', () => openWorkspace());
+
+    // ---- AI helper
+    $(document).on('change', '#novelws_ai_enabled', function () {
+        setSetting('aiEnabled', $(this).prop('checked'));
+        $('.novelws-ai-settings').toggle(Boolean(getSetting('aiEnabled')));
+        if (getSetting('aiEnabled')) populateApiProfiles();
+        refreshAiViews();
+    });
+    $(document).on('focus', '#novelws_api_profile', populateApiProfiles);   // pick up profiles made after load
+    $(document).on('change', '#novelws_api_profile', function () {
+        setSetting('apiProfile', String($(this).val() || ''));
+        refreshAiViews();
+    });
+    $(document).on('change', '#novelws_ai_max_tokens', function () {
+        const v = Math.min(16000, Math.max(100, Math.round(Number($(this).val()) || 1200)));
+        $(this).val(v);
+        setSetting('aiMaxTokens', v);
+    });
+    $(document).on('change', '#novelws_ai_max_chars', function () {
+        const v = Math.min(400000, Math.max(2000, Math.round(Number($(this).val()) || 30000)));
+        $(this).val(v);
+        setSetting('aiMaxChars', v);
+    });
+    $(document).on('input', '.novelws-prompt-ta', function () {
+        const id = $(this).attr('data-prompt-id');
+        const prompts = { ...(getSetting('prompts') || {}) };
+        const v = String($(this).val());
+        if (v === PROMPT_DEFS[id].default) delete prompts[id]; else prompts[id] = v;
+        setSetting('prompts', prompts);
+        validatePromptUi(this);
+    });
+    $(document).on('click', '.novelws-prompt-reset', function () {
+        const id = $(this).attr('data-prompt-reset');
+        const prompts = { ...(getSetting('prompts') || {}) };
+        delete prompts[id];
+        setSetting('prompts', prompts);
+        const ta = $(`.novelws-prompt-ta[data-prompt-id="${id}"]`);
+        ta.val(PROMPT_DEFS[id].default);
+        validatePromptUi(ta[0]);
+        toastr.info(`คืนค่า "${PROMPT_DEFS[id].label}" แล้ว`, TITLE);
+    });
 
     $(document).on('change', '#novelws_daily_goal', function () {
         const v = Math.max(1, Math.round(Number($(this).val()) || 0));

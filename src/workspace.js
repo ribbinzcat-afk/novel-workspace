@@ -5,6 +5,10 @@ import * as P from './project.js';
 import * as S from './stats.js';
 import * as Snap from './snapshots.js';
 import { makeSortable } from './sortable.js';
+import { aiPanelHtml, handleAiAction, onAiInput, resetAi } from './ai-panel.js';
+import { aiAllowed } from './api.js';
+import { exportHtml, handleExportAction, handleExportChange } from './export-view.js';
+import { openLoreImport } from './lore-import.js';
 import { countWords, countChars, formatNum } from './wordcount.js';
 
 const TITLE = 'Novel Workspace';
@@ -113,6 +117,7 @@ export async function closeWorkspace() {
 /** Main switch turned off: save, then remove every trace from the page. */
 export async function teardown() {
     await closeWorkspace();
+    resetAi();
     root?.remove();
     root = null;
     booted = false;
@@ -164,6 +169,7 @@ function mount() {
                 <button class="novelws-tab" data-tab="treatment"><i class="fa-solid fa-list-check"></i><span>Treatment</span></button>
                 <button class="novelws-tab" data-tab="write"><i class="fa-solid fa-pen-nib"></i><span>เขียน</span></button>
                 <button class="novelws-tab" data-tab="stats"><i class="fa-solid fa-chart-simple"></i><span>สถิติ</span></button>
+                <button class="novelws-tab" data-tab="export"><i class="fa-solid fa-file-export"></i><span>ส่งออก</span></button>
             </nav>
             <div class="novelws-header-right">
                 <button class="novelws-ring-btn" data-act="goto-stats" title="เป้าหมายวันนี้"></button>
@@ -211,6 +217,10 @@ async function onClick(ev) {
         return;
     }
     if (!act) return;
+
+    if (act.startsWith('ai-')) { handleAiAction(act, actEl, aiCtx()); return; }
+    if (act.startsWith('ex-') && P.project) { handleExportAction(act, actEl, P.project, renderMain); return; }
+    if (act === 'lore-import') return loreImportFlow(actEl.getAttribute('data-target'), actEl.getAttribute('data-label'));
 
     switch (act) {
         case 'close': return closeWorkspace();
@@ -265,6 +275,7 @@ function onInput(ev) {
     const t = /** @type {HTMLInputElement} */ (ev.target);
     if (t.classList.contains('novelws-editor')) return onEditorInput(t.value);
     if (t.classList.contains('novelws-beat-input')) return syncBeatsFromDom();
+    if (t.classList.contains('novelws-ai-question')) return onAiInput(t);
     if (t.classList.contains('novelws-ep-title-input')) {
         const e = P.getEpisode(ui.episodeId);
         if (!e) return;
@@ -279,6 +290,7 @@ function onInput(ev) {
 
 function onChange(ev) {
     const t = /** @type {HTMLSelectElement} */ (ev.target);
+    if (ui.tab === 'export' && P.project && handleExportChange(/** @type {any} */ (t), P.project, renderMain)) return;
     if (t.classList.contains('novelws-project-select')) {
         if (t.value) switchProject(t.value);
         return;
@@ -553,6 +565,7 @@ function renderMain() {
     }
     if (ui.tab === 'write') renderWrite(main);
     else if (ui.tab === 'treatment') renderTreatment(main);
+    else if (ui.tab === 'export') main.innerHTML = `<div class="novelws-export-wrap">${exportHtml(P.project)}</div>`;
     else renderStats(main);
     applyLayoutClasses();
     bindSortables();
@@ -661,9 +674,10 @@ function rightSideHtml(e) {
     const tabs = `<div class="novelws-side-tabs">
             <button class="novelws-side-tab ${ui.rightTab === 'treatment' ? 'novelws-active' : ''}" data-act="right-tab" data-rt="treatment"><i class="fa-solid fa-clipboard-list"></i> Treatment</button>
             <button class="novelws-side-tab ${ui.rightTab === 'versions' ? 'novelws-active' : ''}" data-act="right-tab" data-rt="versions"><i class="fa-solid fa-clock-rotate-left"></i> เวอร์ชัน</button>
+            ${aiAllowed() ? `<button class="novelws-side-tab ${ui.rightTab === 'ai' ? 'novelws-active' : ''}" data-act="right-tab" data-rt="ai"><i class="fa-solid fa-wand-magic-sparkles"></i> AI</button>` : ''}
         </div>`;
     return `<aside class="novelws-side novelws-side-right">${tabs}
-        <div class="novelws-right-body">${ui.rightTab === 'versions' ? versionsHtml(e) : treatmentSummaryHtml(e)}</div>
+        <div class="novelws-right-body">${rightBodyHtml(e)}</div>
     </aside>`;
 }
 
@@ -732,7 +746,39 @@ function rerenderRight() {
     const e = P.getEpisode(ui.episodeId);
     if (!body || !e) return;
     root.querySelectorAll('.novelws-side-tab').forEach(b => b.classList.toggle('novelws-active', b.getAttribute('data-rt') === ui.rightTab));
-    body.innerHTML = ui.rightTab === 'versions' ? versionsHtml(e) : treatmentSummaryHtml(e);
+    body.innerHTML = rightBodyHtml(e);
+}
+
+function rightBodyHtml(e) {
+    if (ui.rightTab === 'ai' && !aiAllowed()) ui.rightTab = 'treatment';
+    if (ui.rightTab === 'versions') return versionsHtml(e);
+    if (ui.rightTab === 'ai') return aiPanelHtml(e);
+    return treatmentSummaryHtml(e);
+}
+
+function aiCtx() {
+    return { project: P.project, episode: P.getEpisode(ui.episodeId), editor: $q('.novelws-editor'), rerender: rerenderRight, root };
+}
+
+/** AI switch changed in the drawer. */
+export function refreshAiViews() {
+    if (!aiAllowed()) resetAi();
+    if (root && isOpen && ui.tab === 'write') {
+        if (!aiAllowed() && ui.rightTab === 'ai') ui.rightTab = 'treatment';
+        renderMain();
+    }
+}
+
+async function loreImportFlow(path, label) {
+    if (!P.project) return;
+    const text = await openLoreImport(label);
+    if (!text) return;
+    const key = path.slice('overview.'.length);
+    const cur = String(P.project.overview[key] || '').replace(/\s+$/, '');
+    P.project.overview[key] = cur ? `${cur}\n\n${text}` : text;
+    P.markDirty();
+    renderMain();
+    toastr.success('เพิ่มข้อมูลแล้ว', TITLE);
 }
 
 async function snapTakeFlow() {
@@ -836,8 +882,8 @@ const OVERVIEW_FIELDS = [
     { key: 'logline', label: 'Logline', hint: 'เรื่องนี้ในประโยคเดียว', rows: 2 },
     { key: 'genre', label: 'แนว / กลุ่มผู้อ่าน', hint: 'เช่น แฟนตาซีโรแมนซ์ วัยรุ่น', input: true },
     { key: 'premise', label: 'เรื่องย่อ / Premise', hint: 'ภาพรวมของทั้งเรื่อง ต้น กลาง จบ', rows: 8 },
-    { key: 'characters', label: 'ตัวละครหลัก', hint: 'ชื่อ บทบาท เป้าหมาย ปม', rows: 6 },
-    { key: 'world', label: 'โลก / ฉาก', hint: 'สถานที่ กฎของโลก ยุคสมัย', rows: 4 },
+    { key: 'characters', label: 'ตัวละครหลัก', hint: 'ชื่อ บทบาท เป้าหมาย ปม', rows: 6, lore: true },
+    { key: 'world', label: 'โลก / ฉาก', hint: 'สถานที่ กฎของโลก ยุคสมัย', rows: 4, lore: true },
     { key: 'notes', label: 'โน้ต', hint: '', rows: 4 },
 ];
 
@@ -856,7 +902,8 @@ function fieldHtml(f, path, value) {
     const ctl = f.input
         ? `<input id="${id}" class="text_pole" data-field="${path}" value="${esc(value)}" placeholder="${esc(f.hint)}" />`
         : `<textarea id="${id}" class="text_pole novelws-ta" data-field="${path}" rows="${f.rows || 3}" placeholder="${esc(f.hint)}">${esc(value)}</textarea>`;
-    return `<div class="novelws-field ${f.half ? 'novelws-half' : ''}"><label for="${id}">${f.label}</label>${ctl}</div>`;
+    const lore = f.lore ? `<button class="novelws-link-btn" data-act="lore-import" data-target="${path}" data-label="${esc(f.label)}" title="ดึงจากการ์ดตัวละครหรือ Lorebook ของ SillyTavern"><i class="fa-solid fa-book-atlas"></i> ดึงจาก ST</button>` : '';
+    return `<div class="novelws-field ${f.half ? 'novelws-half' : ''}"><div class="novelws-label-row"><label for="${id}">${f.label}</label>${lore}</div>${ctl}</div>`;
 }
 
 function renderTreatment(main) {
