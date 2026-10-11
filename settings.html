@@ -1,0 +1,60 @@
+<div class="novelws-settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b><i class="fa-solid fa-feather-pointed"></i> Novel Workspace</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <label class="checkbox_label" for="novelws_enabled">
+                <input id="novelws_enabled" type="checkbox" />
+                <span>เปิดใช้งาน</span>
+            </label>
+            <small class="novelws-muted">ปิดแล้วปุ่มในไม้คทาและหน้าเขียนจะหายไปทั้งหมด (งานที่เขียนไว้ยังอยู่)</small>
+
+            <button id="novelws_open" class="menu_button novelws-open-btn">
+                <i class="fa-solid fa-book-open"></i> เปิดหน้าเขียนนิยาย
+            </button>
+
+            <h4 class="novelws-settings-h">เป้าหมายรายวัน</h4>
+            <div class="novelws-settings-row">
+                <label for="novelws_daily_goal">คำต่อวัน</label>
+                <input id="novelws_daily_goal" class="text_pole" type="number" min="1" step="100" />
+            </div>
+            <div class="novelws-settings-row">
+                <label for="novelws_day_start">วันใหม่เริ่มเวลา</label>
+                <select id="novelws_day_start" class="text_pole"></select>
+            </div>
+            <label class="checkbox_label" for="novelws_show_ring">
+                <input id="novelws_show_ring" type="checkbox" />
+                <span>แสดงวงแหวนเป้าหมายที่มุมบน</span>
+            </label>
+
+            <h4 class="novelws-settings-h">หน้ากระดาษ</h4>
+            <div class="novelws-settings-row">
+                <label for="novelws_font">ฟอนต์</label>
+                <select id="novelws_font" class="text_pole">
+                    <option value="theme">ตามธีม SillyTavern</option>
+                    <option value="serif">มีเชิง (Serif)</option>
+                    <option value="sans">ไม่มีเชิง (Sans)</option>
+                </select>
+            </div>
+            <div class="novelws-settings-row">
+                <label for="novelws_font_size">ขนาดตัวอักษร <span id="novelws_font_size_val"></span></label>
+                <input id="novelws_font_size" type="range" min="13" max="28" step="1" />
+            </div>
+            <div class="novelws-settings-row">
+                <label for="novelws_line_height">ระยะบรรทัด <span id="novelws_line_height_val"></span></label>
+                <input id="novelws_line_height" type="range" min="1.3" max="2.6" step="0.1" />
+            </div>
+            <div class="novelws-settings-row">
+                <label for="novelws_width">ความกว้างหน้ากระดาษ <span id="novelws_width_val"></span></label>
+                <input id="novelws_width" type="range" min="480" max="1200" step="20" />
+            </div>
+
+            <small class="novelws-muted">
+                งานเขียนเก็บเป็นไฟล์ <code>novelws-*.json</code> ในโฟลเดอร์ <code>data/&lt;ผู้ใช้&gt;/user/files/</code>
+                แยกจากแชทและ settings.json · คีย์ลัด Ctrl/Cmd + S = บันทึกทันที
+            </small>
+        </div>
+    </div>
+</div>
