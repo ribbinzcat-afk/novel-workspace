@@ -229,6 +229,16 @@ export function moveEpisode(eid, delta) {
     return true;
 }
 
+/** Drag-and-drop reorder by index. */
+export function reorderEpisode(from, to) {
+    const arr = project.episodes;
+    if (from < 0 || from >= arr.length || to < 0 || to >= arr.length || from === to) return false;
+    const [ep] = arr.splice(from, 1);
+    arr.splice(to, 0, ep);
+    markDirty();
+    return true;
+}
+
 /** Called on every keystroke in the editor. Word counting is done separately (debounced). */
 export function setEpisodeText(eid, text) {
     const e = getEpisode(eid);

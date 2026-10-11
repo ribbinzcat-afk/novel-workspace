@@ -3,6 +3,8 @@ import { getContext } from '../../../../extensions.js';
 import { getSetting, setSetting, LOG } from './store.js';
 import * as P from './project.js';
 import * as S from './stats.js';
+import * as Snap from './snapshots.js';
+import { makeSortable } from './sortable.js';
 import { countWords, countChars, formatNum } from './wordcount.js';
 
 const TITLE = 'Novel Workspace';
@@ -24,6 +26,8 @@ const ui = {
     leftCollapsed: false,   // desktop: episode list hidden
     focus: false,
     statsScope: 'all',      // 'all' | 'project'
+    treatView: 'form',      // 'form' | 'board' (corkboard)
+    rightTab: 'treatment',  // 'treatment' | 'versions'
 };
 
 // ================================================================ helpers
@@ -74,6 +78,7 @@ export async function openWorkspace() {
     document.body.classList.add('novelws-open');
     isOpen = true;
     ui.tab = getSetting('lastTab') || 'write';
+    ui.treatView = getSetting('treatView') === 'board' ? 'board' : 'form';
     if (!booted && isNarrow()) ui.rightOpen = false;
 
     if (!booted) {
@@ -102,7 +107,7 @@ export async function closeWorkspace() {
     clearInterval(ringTimer);
     root.classList.add('novelws-hidden');
     document.body.classList.remove('novelws-open');
-    await Promise.all([P.flushProject(), S.flushStats()]);
+    await Promise.all([P.flushProject(), S.flushStats(), Snap.flushSnapshots()]);
 }
 
 /** Main switch turned off: save, then remove every trace from the page. */
@@ -172,6 +177,10 @@ function mount() {
     root.addEventListener('input', onInput);
     root.addEventListener('change', onChange);
     root.addEventListener('keydown', onKeyDown);
+    root.addEventListener('paste', (ev) => {
+        const t = /** @type {HTMLInputElement} */ (ev.target);
+        if (t.classList?.contains('novelws-beat-input')) onBeatPaste(ev, t);
+    });
 
     P.onSaveState(renderSaveState);
 
@@ -229,12 +238,33 @@ async function onClick(ev) {
         }
         case 'scope': ui.statsScope = actEl.getAttribute('data-scope'); return renderMain();
         case 'save-now': return P.flushProject();
+        case 'right-tab':
+            ui.rightTab = actEl.getAttribute('data-rt');
+            if (!ui.rightOpen) { ui.rightOpen = true; applyLayoutClasses(); }
+            return rerenderRight();
+        case 'snap-take': return snapTakeFlow();
+        case 'snap-view': return snapViewFlow(actEl.closest('.novelws-snap').getAttribute('data-sid'));
+        case 'snap-restore': return snapRestoreFlow(actEl.closest('.novelws-snap').getAttribute('data-sid'));
+        case 'snap-delete': return snapDeleteFlow(actEl.closest('.novelws-snap').getAttribute('data-sid'));
+        case 'treat-view':
+            ui.treatView = actEl.getAttribute('data-view');
+            setSetting('treatView', ui.treatView);
+            return renderMain();
+        case 'board-open': {
+            ui.treatSel = actEl.getAttribute('data-eid');
+            ui.treatView = 'form';
+            setSetting('treatView', 'form');
+            return renderMain();
+        }
+        case 'beat-add': return addBeat(actEl.closest('.novelws-beat'));
+        case 'beat-del': return deleteBeat(actEl.closest('.novelws-beat'));
     }
 }
 
 function onInput(ev) {
     const t = /** @type {HTMLInputElement} */ (ev.target);
     if (t.classList.contains('novelws-editor')) return onEditorInput(t.value);
+    if (t.classList.contains('novelws-beat-input')) return syncBeatsFromDom();
     if (t.classList.contains('novelws-ep-title-input')) {
         const e = P.getEpisode(ui.episodeId);
         if (!e) return;
@@ -277,10 +307,13 @@ function onChange(ev) {
 }
 
 function onKeyDown(ev) {
+    const tgt = /** @type {HTMLInputElement} */ (ev.target);
+    if (tgt.classList?.contains('novelws-beat-input')) { onBeatKeyDown(ev, tgt); if (ev.defaultPrevented) return; }
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
         ev.preventDefault();
         flushRecount();
         P.flushProject();
+        Snap.flushSnapshots();
         return;
     }
     if (ev.key === 'Escape') {
@@ -297,6 +330,7 @@ async function switchProject(id, { silentRender = false } = {}) {
     flushRecount();
     try {
         const { restored } = await P.openProject(id);
+        Snap.loadSnapshots(P.project.id).then(() => { if (isOpen && ui.rightTab === 'versions') rerenderRight(); });
         if (restored) toastr.info(`กู้ข้อความที่ยังไม่ได้บันทึกกลับมา ${restored} ตอน`, TITLE);
     } catch (e) {
         console.error(LOG, e);
@@ -315,6 +349,7 @@ async function newProjectFlow() {
     flushRecount();
     try {
         await P.createProject(title);
+        Snap.loadSnapshots(P.project.id).then(() => { if (isOpen && ui.rightTab === 'versions') rerenderRight(); });
         ui.episodeId = P.project.episodes[0].id;
         ui.treatSel = 'overview';
         setSetting('lastEpisodeId', ui.episodeId);
@@ -342,6 +377,7 @@ async function deleteProjectFlow() {
     if (!ok) return;
     try {
         await P.deleteProject(p.id);
+        await Snap.deleteProjectSnapshots(p.id);
         S.forgetProject(p.id);
         toastr.success('ลบเรื่องแล้ว', TITLE);
         const next = P.index.projects[0];
@@ -372,7 +408,8 @@ function selectTreatment(sel) {
 function addEpisodeFlow() {
     if (!P.project) return;
     flushRecount();
-    const after = ui.tab === 'treatment' ? (ui.treatSel !== 'overview' ? ui.treatSel : '') : ui.episodeId;
+    const board = ui.tab === 'treatment' && ui.treatView === 'board';
+    const after = board ? '' : ui.tab === 'treatment' ? (ui.treatSel !== 'overview' ? ui.treatSel : '') : ui.episodeId;
     const ep = P.addEpisode(P.project.episodes.length ? (after || P.project.episodes.at(-1).id) : '');
     if (ui.tab === 'treatment') ui.treatSel = ep.id;
     else { ui.episodeId = ep.id; setSetting('lastEpisodeId', ep.id); }
@@ -393,6 +430,7 @@ async function deleteEpisodeFlow(eid) {
     S.recordEpisodeDeleted(P.project.id, eid, e.words);
     const idx = P.project.episodes.findIndex(x => x.id === eid);
     P.removeEpisode(eid);
+    Snap.removeEpisode(eid);
     const neighbour = P.project.episodes[Math.max(0, idx - 1)]?.id || '';
     if (ui.episodeId === eid) ui.episodeId = neighbour;
     if (ui.treatSel === eid) ui.treatSel = neighbour || 'overview';
@@ -404,6 +442,8 @@ async function deleteEpisodeFlow(eid) {
 
 function onEditorInput(text) {
     if (!ui.episodeId) return;
+    const before = P.getEpisode(ui.episodeId);
+    if (before) Snap.beforeEdit(P.project.id, before.id, before.text);
     P.setEpisodeText(ui.episodeId, text);
     recountEid = ui.episodeId;
     clearTimeout(recountTimer);
@@ -515,6 +555,19 @@ function renderMain() {
     else if (ui.tab === 'treatment') renderTreatment(main);
     else renderStats(main);
     applyLayoutClasses();
+    bindSortables();
+}
+
+function bindSortables() {
+    const reorder = (from, to) => {
+        flushRecount();
+        if (P.reorderEpisode(from, to)) renderMain();
+    };
+    makeSortable($q('.novelws-ep-list'), { item: '.novelws-ep', handle: '.novelws-grip', onEnd: reorder });
+    makeSortable($q('.novelws-board'), { item: '.novelws-card-ep', handle: '.novelws-grip', grid: true, onEnd: reorder });
+    makeSortable($q('.novelws-beats-edit'), {
+        item: '.novelws-beat', handle: '.novelws-grip', onEnd: () => { syncBeatsFromDom(); },
+    });
 }
 
 // ---------------------------------------------------------------- episode list (shared)
@@ -522,6 +575,7 @@ function renderMain() {
 function episodeRowHtml(e, i, selected, withActions) {
     const pct = e.target > 0 ? Math.min(100, Math.round(e.words / e.target * 100)) : 0;
     return `<div class="novelws-ep ${selected ? 'novelws-selected' : ''}" data-eid="${esc(e.id)}" tabindex="0">
+        <span class="novelws-grip" title="ลากเพื่อสลับลำดับ"><i class="fa-solid fa-grip-vertical"></i></span>
         <span class="novelws-ep-dot novelws-st-${esc(e.status)}" title="${esc(P.statusLabel(e.status))}"></span>
         <div class="novelws-ep-main">
             <div class="novelws-ep-name"><span class="novelws-ep-no">${i + 1}.</span> ${esc(e.title || 'ไม่มีชื่อ')}</div>
@@ -529,8 +583,6 @@ function episodeRowHtml(e, i, selected, withActions) {
             ${e.target ? `<div class="novelws-ep-bar"><i style="width:${pct}%"></i></div>` : ''}
         </div>
         ${withActions && selected ? `<div class="novelws-ep-actions">
-            <button class="novelws-mini-btn" data-act="ep-up" title="เลื่อนขึ้น"><i class="fa-solid fa-chevron-up"></i></button>
-            <button class="novelws-mini-btn" data-act="ep-down" title="เลื่อนลง"><i class="fa-solid fa-chevron-down"></i></button>
             <button class="novelws-mini-btn" data-act="ep-delete" title="ลบตอน"><i class="fa-solid fa-trash-can"></i></button>
         </div>` : ''}
     </div>`;
@@ -583,6 +635,7 @@ function renderWrite(main) {
                 <select class="text_pole novelws-ep-status" aria-label="สถานะ">
                     ${P.STATUSES.map(s => `<option value="${s.id}" ${s.id === e.status ? 'selected' : ''}>${s.label}</option>`).join('')}
                 </select>` : '<div class="novelws-grow"></div>'}
+                ${e ? '<button class="novelws-icon-btn" data-act="snap-take" title="บันทึกเวอร์ชันนี้ไว้ย้อนกลับ"><i class="fa-solid fa-camera"></i></button>' : ''}
                 <button class="novelws-icon-btn" data-act="toggle-focus" title="โหมดโฟกัส (Esc เพื่อออก)"><i class="fa-solid fa-expand"></i></button>
                 <button class="novelws-icon-btn" data-act="toggle-right" title="Treatment ของตอนนี้"><i class="fa-solid fa-clipboard-list"></i></button>
             </div>
@@ -605,13 +658,22 @@ function renderWrite(main) {
 
 function rightSideHtml(e) {
     if (!e) return '<aside class="novelws-side novelws-side-right"></aside>';
+    const tabs = `<div class="novelws-side-tabs">
+            <button class="novelws-side-tab ${ui.rightTab === 'treatment' ? 'novelws-active' : ''}" data-act="right-tab" data-rt="treatment"><i class="fa-solid fa-clipboard-list"></i> Treatment</button>
+            <button class="novelws-side-tab ${ui.rightTab === 'versions' ? 'novelws-active' : ''}" data-act="right-tab" data-rt="versions"><i class="fa-solid fa-clock-rotate-left"></i> เวอร์ชัน</button>
+        </div>`;
+    return `<aside class="novelws-side novelws-side-right">${tabs}
+        <div class="novelws-right-body">${ui.rightTab === 'versions' ? versionsHtml(e) : treatmentSummaryHtml(e)}</div>
+    </aside>`;
+}
+
+function treatmentSummaryHtml(e) {
     const t = e.treatment;
     const beats = String(t.beats || '').split('\n').map(s => s.trim()).filter(Boolean);
     const row = (label, val) => val ? `<div class="novelws-tr-row"><div class="novelws-tr-label">${label}</div><div class="novelws-tr-val">${esc(val)}</div></div>` : '';
     const empty = !t.summary && !beats.length && !t.pov && !t.characters && !t.location && !t.hook && !t.notes;
-    return `<aside class="novelws-side novelws-side-right">
-        <div class="novelws-side-head">
-            <span>Treatment ตอนนี้</span>
+    return `<div class="novelws-side-subhead">
+            <span class="novelws-muted">ของตอนที่เขียนอยู่</span>
             <button class="novelws-icon-btn" data-act="edit-treatment" title="แก้ Treatment"><i class="fa-solid fa-pen"></i></button>
         </div>
         <div class="novelws-tr-body">
@@ -623,12 +685,109 @@ function rightSideHtml(e) {
             ${row('สถานที่', t.location)}
             ${row('Hook ท้ายตอน', t.hook)}
             ${row('โน้ต', t.notes)}
+        </div>`;
+}
+
+const KIND_LABEL = { auto: 'อัตโนมัติ', manual: 'บันทึกเอง', restore: 'ก่อนกู้คืน' };
+
+function fmtTime(ts) {
+    const d = new Date(ts);
+    const now = new Date();
+    const time = d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+    if (d.toDateString() === now.toDateString()) return `วันนี้ ${time}`;
+    const y = new Date(now); y.setDate(now.getDate() - 1);
+    if (d.toDateString() === y.toDateString()) return `เมื่อวาน ${time}`;
+    return `${d.getDate()} ${TH_MONTHS[d.getMonth()]} ${time}`;
+}
+
+function versionsHtml(e) {
+    if (!Snap.isLoaded()) return '<div class="novelws-muted novelws-pad"><i class="fa-solid fa-spinner fa-spin"></i> กำลังโหลด…</div>';
+    const snaps = Snap.list(e.id);
+    return `<div class="novelws-side-subhead">
+            <span class="novelws-muted">${snaps.length} เวอร์ชัน</span>
+            <button class="menu_button novelws-snap-take" data-act="snap-take"><i class="fa-solid fa-camera"></i> บันทึกเวอร์ชันนี้</button>
         </div>
-    </aside>`;
+        <div class="novelws-snap-list">
+            ${snaps.length ? snaps.map(sn => {
+                const diff = e.words - sn.words;
+                return `<div class="novelws-snap" data-sid="${esc(sn.id)}">
+                    <div class="novelws-snap-head">
+                        <span class="novelws-snap-kind novelws-k-${esc(sn.kind)}">${KIND_LABEL[sn.kind] || sn.kind}</span>
+                        <span class="novelws-snap-time">${fmtTime(sn.ts)}</span>
+                    </div>
+                    ${sn.label && sn.kind === 'manual' ? `<div class="novelws-snap-label">${esc(sn.label)}</div>` : ''}
+                    <div class="novelws-snap-meta">${formatNum(sn.words)} คำ <span class="novelws-muted">(ตอนนี้ ${diff >= 0 ? '+' : ''}${formatNum(diff)})</span></div>
+                    <div class="novelws-snap-actions">
+                        <button class="novelws-mini-btn" data-act="snap-view" title="ดู"><i class="fa-solid fa-eye"></i></button>
+                        <button class="novelws-mini-btn" data-act="snap-restore" title="กู้คืนเวอร์ชันนี้"><i class="fa-solid fa-rotate-left"></i></button>
+                        <button class="novelws-mini-btn" data-act="snap-delete" title="ลบ"><i class="fa-solid fa-trash-can"></i></button>
+                    </div>
+                </div>`;
+            }).join('') : `<div class="novelws-muted novelws-pad">ยังไม่มีเวอร์ชันเก่าของตอนนี้<br><small>ระบบจะเก็บให้อัตโนมัติวันละครั้งก่อนเริ่มแก้ตอนนั้น หรือกด “บันทึกเวอร์ชันนี้” เพื่อเก็บเองได้ทุกเมื่อ</small></div>`}
+        </div>`;
+}
+
+function rerenderRight() {
+    const body = $q('.novelws-right-body');
+    const e = P.getEpisode(ui.episodeId);
+    if (!body || !e) return;
+    root.querySelectorAll('.novelws-side-tab').forEach(b => b.classList.toggle('novelws-active', b.getAttribute('data-rt') === ui.rightTab));
+    body.innerHTML = ui.rightTab === 'versions' ? versionsHtml(e) : treatmentSummaryHtml(e);
+}
+
+async function snapTakeFlow() {
+    const e = P.getEpisode(ui.episodeId);
+    if (!e) return;
+    flushRecount();
+    const { call, TYPE } = popup();
+    const label = await call('ตั้งชื่อเวอร์ชันนี้ (ไม่ใส่ก็ได้)', TYPE.INPUT, '');
+    if (label === null || label === false || label === undefined) return;
+    Snap.takeManual(e.id, e.text, String(label).trim());
+    Snap.flushSnapshots();
+    toastr.success('บันทึกเวอร์ชันแล้ว', TITLE);
+    rerenderRight();
+}
+
+async function snapViewFlow(sid) {
+    const e = P.getEpisode(ui.episodeId);
+    const sn = e && Snap.get(e.id, sid);
+    if (!sn) return;
+    const { call, TYPE } = popup();
+    const html = `<div class="novelws-snap-view">
+        <h3>${esc(e.title)} <small>· ${fmtTime(sn.ts)} · ${formatNum(sn.words)} คำ</small></h3>
+        <div class="novelws-snap-text">${esc(sn.text) || '<i>(ว่าง)</i>'}</div>
+    </div>`;
+    await call(html, TYPE.TEXT, '', { wide: true, large: true, allowVerticalScrolling: true, okButton: 'ปิด' });
+}
+
+async function snapRestoreFlow(sid) {
+    const e = P.getEpisode(ui.episodeId);
+    const sn = e && Snap.get(e.id, sid);
+    if (!sn) return;
+    const ok = await confirmBox(`<h3>กู้คืนเวอร์ชัน ${esc(fmtTime(sn.ts))}?</h3><p>ข้อความปัจจุบัน (${formatNum(e.words)} คำ) จะถูกเก็บเป็นเวอร์ชัน “ก่อนกู้คืน” ไว้ให้ย้อนกลับได้</p>`);
+    if (!ok) return;
+    flushRecount();
+    Snap.takeBeforeRestore(e.id, e.text);
+    P.setEpisodeText(e.id, sn.text);
+    recountEid = e.id;
+    flushRecount();
+    Snap.flushSnapshots();
+    const ed = $q('.novelws-editor');
+    if (ed) ed.value = sn.text;
+    rerenderRight();
+    toastr.success('กู้คืนแล้ว', TITLE);
+}
+
+function snapDeleteFlow(sid) {
+    const e = P.getEpisode(ui.episodeId);
+    if (!e) return;
+    Snap.remove(e.id, sid);
+    rerenderRight();
 }
 
 function updateCounters() {
     if (!root || !P.project) { renderRing(); return; }
+    if (ui.tab === 'write' && ui.rightOpen && ui.rightTab === 'versions') rerenderRight();
     const e = P.getEpisode(ui.episodeId);
     const sbEp = $q('.novelws-sb-ep');
     if (sbEp && e) {
@@ -702,41 +861,159 @@ function fieldHtml(f, path, value) {
 
 function renderTreatment(main) {
     if (ui.treatSel !== 'overview' && !P.getEpisode(ui.treatSel)) ui.treatSel = 'overview';
-    let form;
-    if (ui.treatSel === 'overview') {
-        const o = P.project.overview;
-        form = `<h2 class="novelws-form-title"><i class="fa-solid fa-book"></i> ภาพรวมเรื่อง</h2>
-            <div class="novelws-field"><label for="novelws-f-ptitle">ชื่อเรื่อง</label>
-                <input id="novelws-f-ptitle" class="text_pole" data-field="project.title" value="${esc(P.project.title)}" /></div>
-            ${OVERVIEW_FIELDS.map(f => fieldHtml(f, `overview.${f.key}`, o[f.key])).join('')}`;
-    } else {
-        const e = P.getEpisode(ui.treatSel);
-        const i = P.project.episodes.indexOf(e);
-        form = `<h2 class="novelws-form-title"><span class="novelws-muted">ตอนที่ ${i + 1}</span></h2>
-            <div class="novelws-field"><label for="novelws-f-etitle">ชื่อตอน</label>
-                <input id="novelws-f-etitle" class="text_pole" data-field="episode.title" value="${esc(e.title)}" /></div>
-            <div class="novelws-field novelws-half"><label for="novelws-f-estatus">สถานะ</label>
-                <select id="novelws-f-estatus" class="text_pole" data-field="episode.status">
-                    ${P.STATUSES.map(s => `<option value="${s.id}" ${s.id === e.status ? 'selected' : ''}>${s.label}</option>`).join('')}
-                </select></div>
-            <div class="novelws-field novelws-half"><label for="novelws-f-etarget">เป้าจำนวนคำของตอน</label>
-                <input id="novelws-f-etarget" class="text_pole" type="number" min="0" step="100" data-field="episode.target" value="${e.target || ''}" placeholder="ไม่ตั้งก็ได้" /></div>
-            ${EPISODE_FIELDS.map(f => fieldHtml(f, `episode.treatment.${f.key}`, e.treatment[f.key])).join('')}
-            <div class="novelws-form-foot">
-                <span class="novelws-muted">เขียนไปแล้ว ${formatNum(e.words)} คำ</span>
-                <button class="menu_button novelws-primary" data-act="write-this" data-eid="${esc(e.id)}"><i class="fa-solid fa-pen-nib"></i> ไปเขียนตอนนี้</button>
-            </div>`;
-    }
-    main.innerHTML = `<div class="novelws-treat">
+    const board = ui.treatView === 'board';
+    const viewToggle = `<div class="novelws-seg">
+            <button class="novelws-seg-btn ${!board ? 'novelws-active' : ''}" data-act="treat-view" data-view="form"><i class="fa-solid fa-align-left"></i> ฟอร์ม</button>
+            <button class="novelws-seg-btn ${board ? 'novelws-active' : ''}" data-act="treat-view" data-view="board"><i class="fa-solid fa-table-cells-large"></i> Corkboard</button>
+        </div>`;
+    main.innerHTML = `<div class="novelws-treat ${board ? 'novelws-board-mode' : ''}">
         ${leftSideHtml(ui.treatSel, { overview: true })}
         <div class="novelws-scrim" data-act="close-drawers"></div>
         <section class="novelws-form-col">
-            <div class="novelws-toolbar novelws-toolbar-mobile">
-                <button class="novelws-icon-btn" data-act="toggle-left" title="รายชื่อตอน"><i class="fa-solid fa-bars"></i></button>
-                <span class="novelws-muted">เลือกตอนเพื่อวาง Treatment</span>
+            <div class="novelws-toolbar">
+                <button class="novelws-icon-btn novelws-only-narrow" data-act="toggle-left" title="รายชื่อตอน"><i class="fa-solid fa-bars"></i></button>
+                ${viewToggle}
+                <span class="novelws-grow"></span>
+                ${board ? `<button class="menu_button" data-act="add-episode"><i class="fa-solid fa-plus"></i> เพิ่มตอน</button>` : ''}
             </div>
-            <div class="novelws-form">${form}</div>
+            ${board ? boardHtml() : `<div class="novelws-form">${treatmentFormHtml()}</div>`}
         </section>
+    </div>`;
+}
+
+function treatmentFormHtml() {
+    if (ui.treatSel === 'overview') {
+        const o = P.project.overview;
+        return `<h2 class="novelws-form-title"><i class="fa-solid fa-book"></i> ภาพรวมเรื่อง</h2>
+            <div class="novelws-field"><label for="novelws-f-ptitle">ชื่อเรื่อง</label>
+                <input id="novelws-f-ptitle" class="text_pole" data-field="project.title" value="${esc(P.project.title)}" /></div>
+            ${OVERVIEW_FIELDS.map(f => fieldHtml(f, `overview.${f.key}`, o[f.key])).join('')}`;
+    }
+    const e = P.getEpisode(ui.treatSel);
+    const i = P.project.episodes.indexOf(e);
+    return `<h2 class="novelws-form-title"><span class="novelws-muted">ตอนที่ ${i + 1}</span></h2>
+        <div class="novelws-field"><label for="novelws-f-etitle">ชื่อตอน</label>
+            <input id="novelws-f-etitle" class="text_pole" data-field="episode.title" value="${esc(e.title)}" /></div>
+        <div class="novelws-field novelws-half"><label for="novelws-f-estatus">สถานะ</label>
+            <select id="novelws-f-estatus" class="text_pole" data-field="episode.status">
+                ${P.STATUSES.map(s => `<option value="${s.id}" ${s.id === e.status ? 'selected' : ''}>${s.label}</option>`).join('')}
+            </select></div>
+        <div class="novelws-field novelws-half"><label for="novelws-f-etarget">เป้าจำนวนคำของตอน</label>
+            <input id="novelws-f-etarget" class="text_pole" type="number" min="0" step="100" data-field="episode.target" value="${e.target || ''}" placeholder="ไม่ตั้งก็ได้" /></div>
+        ${EPISODE_FIELDS.map(f => f.key === 'beats' ? beatsEditorHtml(f, e.treatment.beats) : fieldHtml(f, `episode.treatment.${f.key}`, e.treatment[f.key])).join('')}
+        <div class="novelws-form-foot">
+            <span class="novelws-muted">เขียนไปแล้ว ${formatNum(e.words)} คำ</span>
+            <button class="menu_button novelws-primary" data-act="write-this" data-eid="${esc(e.id)}"><i class="fa-solid fa-pen-nib"></i> ไปเขียนตอนนี้</button>
+        </div>`;
+}
+
+// ---------------------------------------------------------------- beats editor (drag to reorder)
+
+const beatRowHtml = (text) => `<div class="novelws-beat">
+        <span class="novelws-grip" title="ลากเพื่อสลับลำดับ"><i class="fa-solid fa-grip-vertical"></i></span>
+        <input class="text_pole novelws-beat-input" value="${esc(text)}" placeholder="เหตุการณ์…" />
+        <button class="novelws-mini-btn" data-act="beat-del" title="ลบเหตุการณ์นี้"><i class="fa-solid fa-xmark"></i></button>
+    </div>`;
+
+function beatsEditorHtml(f, value) {
+    const lines = String(value || '').split('\n');
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    return `<div class="novelws-field">
+        <label>${f.label} <small class="novelws-muted">— ลาก <i class="fa-solid fa-grip-vertical"></i> เพื่อสลับ · Enter = เพิ่มข้อถัดไป</small></label>
+        <div class="novelws-beats-edit">${lines.map(beatRowHtml).join('')}</div>
+        <button class="menu_button novelws-beat-addbtn" data-act="beat-add"><i class="fa-solid fa-plus"></i> เพิ่มเหตุการณ์</button>
+    </div>`;
+}
+
+function syncBeatsFromDom() {
+    const e = P.getEpisode(ui.treatSel);
+    const box = $q('.novelws-beats-edit');
+    if (!e || !box) return;
+    e.treatment.beats = Array.from(box.querySelectorAll('.novelws-beat-input')).map(i => i.value.replace(/\n/g, ' ')).join('\n');
+    P.markDirty();
+}
+
+function addBeat(afterRow, text = '', focus = true) {
+    const box = $q('.novelws-beats-edit');
+    if (!box) return null;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = beatRowHtml(text);
+    const row = tmp.firstElementChild;
+    if (afterRow && afterRow.parentElement === box) box.insertBefore(row, afterRow.nextElementSibling);
+    else box.appendChild(row);
+    syncBeatsFromDom();
+    if (focus) row.querySelector('input')?.focus();
+    return row;
+}
+
+function deleteBeat(row, focusPrev = false) {
+    if (!row) return;
+    const prev = row.previousElementSibling;
+    row.remove();
+    syncBeatsFromDom();
+    if (focusPrev && prev) {
+        const i = prev.querySelector('input');
+        i?.focus();
+        i?.setSelectionRange(i.value.length, i.value.length);
+    }
+}
+
+function onBeatKeyDown(ev, input) {
+    const row = input.closest('.novelws-beat');
+    if (ev.key === 'Enter' && !ev.isComposing) {
+        ev.preventDefault();
+        addBeat(row);
+    } else if (ev.key === 'Backspace' && !input.value && !ev.isComposing) {
+        ev.preventDefault();
+        deleteBeat(row, true);
+    }
+}
+
+function onBeatPaste(ev, input) {
+    const text = ev.clipboardData?.getData('text') || '';
+    if (!text.includes('\n')) return;
+    ev.preventDefault();
+    const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (!lines.length) return;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    input.value = input.value.slice(0, start) + lines[0] + input.value.slice(end);
+    let row = input.closest('.novelws-beat');
+    for (const line of lines.slice(1)) row = addBeat(row, line, false);
+    syncBeatsFromDom();
+    row?.querySelector('input')?.focus();
+}
+
+// ---------------------------------------------------------------- corkboard
+
+function boardHtml() {
+    const eps = P.project.episodes;
+    return `<div class="novelws-board-wrap">
+        <div class="novelws-board">
+            ${eps.map((e, i) => {
+                const t = e.treatment;
+                const beats = String(t.beats || '').split('\n').filter(x => x.trim()).length;
+                const pct = e.target > 0 ? Math.min(100, Math.round(e.words / e.target * 100)) : 0;
+                return `<div class="novelws-card-ep novelws-cs-${esc(e.status)}" data-eid="${esc(e.id)}" data-act="board-open" tabindex="0">
+                    <div class="novelws-card-ep-head">
+                        <span class="novelws-grip" title="ลากเพื่อสลับลำดับ"><i class="fa-solid fa-grip-vertical"></i></span>
+                        <span class="novelws-muted">ตอนที่ ${i + 1}</span>
+                        <span class="novelws-grow"></span>
+                        <span class="novelws-ep-dot novelws-st-${esc(e.status)}"></span>
+                        <span class="novelws-card-ep-status">${esc(P.statusLabel(e.status))}</span>
+                    </div>
+                    <div class="novelws-card-ep-title">${esc(e.title || 'ไม่มีชื่อ')}</div>
+                    <div class="novelws-card-ep-sum ${t.summary ? '' : 'novelws-muted'}">${t.summary ? esc(t.summary) : 'ยังไม่มีเรื่องย่อ'}</div>
+                    ${t.hook ? `<div class="novelws-card-ep-hook"><i class="fa-solid fa-anchor"></i> ${esc(t.hook)}</div>` : ''}
+                    <div class="novelws-card-ep-foot">
+                        <span>${formatNum(e.words)}${e.target ? ` / ${formatNum(e.target)}` : ''} คำ</span>
+                        ${beats ? `<span class="novelws-muted"><i class="fa-solid fa-list-ol"></i> ${beats}</span>` : ''}
+                    </div>
+                    ${e.target ? `<div class="novelws-ep-bar"><i style="width:${pct}%"></i></div>` : ''}
+                </div>`;
+            }).join('')}
+            <button class="novelws-card-add" data-act="add-episode"><i class="fa-solid fa-plus"></i><span>เพิ่มตอน</span></button>
+        </div>
     </div>`;
 }
 
@@ -821,6 +1098,8 @@ function renderStats(main) {
             <div class="novelws-card novelws-kpi"><span>วันที่เขียนเยอะสุด</span><b>${formatNum(best.words)}</b><small class="novelws-muted">${best.key ? shortDate(best.key) : '–'}</small></div>
         </div>
 
+        ${heatmapHtml(scopePid, g)}
+
         <div class="novelws-card">
             <div class="novelws-card-title">30 วันล่าสุด</div>
             <div class="novelws-chart" style="--novelws-goal-pos:${(g / max) * 100}%">
@@ -839,5 +1118,31 @@ function renderStats(main) {
                 return `<li><span>${esc(e ? e.title : '(ตอนที่ลบไปแล้ว)')}</span><b class="${x.delta < 0 ? 'novelws-neg' : ''}">${x.delta > 0 ? '+' : ''}${formatNum(x.delta)}</b></li>`;
             }).join('')}</ul>` : '<div class="novelws-muted">วันนี้ยังไม่ได้เขียนเรื่องนี้</div>'}
         </div>` : ''}
+    </div>`;
+}
+
+function heatmapHtml(scopePid, g) {
+    const WEEKS = isNarrow() ? 17 : 26;
+    const days = S.heatmapDays(WEEKS, scopePid);
+    const level = (w) => w <= 0 ? 0 : w < g * 0.25 ? 1 : w < g * 0.5 ? 2 : w < g ? 3 : 4;
+    // Month label above the first column that contains the 1st–7th of a month.
+    const months = [];
+    for (let c = 0; c < WEEKS; c++) {
+        const first = days[c * 7];
+        const hit = days.slice(c * 7, c * 7 + 7).find(d => d.date === 1);
+        const soonNew = days.slice(7, 21).some(d => d.date === 1); // a label in col 1–2 would collide
+        months.push(c === 0 ? (soonNew ? '' : TH_MONTHS[first.month]) : hit ? TH_MONTHS[hit.month] : '');
+    }
+    const DOW = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+    return `<div class="novelws-card">
+        <div class="novelws-card-title">ปฏิทินการเขียน <span class="novelws-muted">· ${WEEKS} สัปดาห์ · เขียน ${S.activeDays(scopePid)} วัน</span></div>
+        <div class="novelws-heat" style="--novelws-weeks:${WEEKS}">
+            <div class="novelws-heat-months">${months.map(m => `<span>${m}</span>`).join('')}</div>
+            <div class="novelws-heat-dow">${DOW.map((d, i) => `<span>${i % 2 ? d : ''}</span>`).join('')}</div>
+            <div class="novelws-heat-grid">
+                ${days.map(d => `<i class="novelws-hl-${d.future ? 'x' : level(d.words)}" title="${shortDate(d.key)}: ${formatNum(d.words)} คำ"></i>`).join('')}
+            </div>
+        </div>
+        <div class="novelws-heat-legend"><span>น้อย</span><i class="novelws-hl-0"></i><i class="novelws-hl-1"></i><i class="novelws-hl-2"></i><i class="novelws-hl-3"></i><i class="novelws-hl-4"></i><span>ถึงเป้า</span></div>
     </div>`;
 }

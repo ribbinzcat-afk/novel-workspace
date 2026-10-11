@@ -25,6 +25,7 @@ export const defaultSettings = {
     lastProjectId: '',
     lastEpisodeId: '',
     lastTab: 'write',
+    treatView: 'form',
 };
 
 export function getSettings() {

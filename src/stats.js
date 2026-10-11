@@ -143,3 +143,25 @@ export function bestDay(pid = null) {
     }
     return best;
 }
+
+/**
+ * Days for a calendar heatmap: `weeks` columns × 7 rows (Sunday first), ending with the week of today.
+ * @returns {{key:string, words:number, future:boolean, month:number, date:number}[]}
+ */
+export function heatmapDays(weeks, pid = null) {
+    const today = dayKey();
+    const weekday = keyToDate(today).getDay();
+    const start = addDays(today, -((weeks - 1) * 7 + weekday));
+    const out = [];
+    for (let i = 0; i < weeks * 7; i++) {
+        const key = addDays(start, i);
+        const d = keyToDate(key);
+        out.push({ key, words: Math.max(0, dayTotal(key, pid)), future: key > today, month: d.getMonth(), date: d.getDate() });
+    }
+    return out;
+}
+
+/** Total days that have any writing recorded (net > 0). */
+export function activeDays(pid = null) {
+    return Object.keys(stats.days).filter(k => dayTotal(k, pid) > 0).length;
+}
